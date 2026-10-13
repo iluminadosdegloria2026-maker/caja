@@ -201,6 +201,9 @@ textarea{font-family:var(--font-mono);font-size:14px}
 .nav button[aria-current=page]{color:var(--accent)}
 .nav svg{width:24px;height:24px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .toast{position:fixed;left:16px;right:16px;max-width:520px;margin-inline:auto;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px) + 78px);z-index:60;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;font-size:15px;font-weight:600;text-align:center;box-shadow:var(--shadow)}
+.export{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.export summary{font-weight:700;cursor:pointer;min-height:32px;display:flex;align-items:center}
+.export-body{display:flex;flex-direction:column;gap:12px;margin-top:10px}
 </style>
 </head>
 <body>
@@ -232,6 +235,7 @@ textarea{font-family:var(--font-mono);font-size:14px}
       <p class="summary" id="prod-summary"></p>
       <div class="tools" id="prod-tools" hidden>
         <label class="field"><span class="sr-only">Buscar producto</span><input id="pq" type="search" placeholder="Buscar en tus productos" autocomplete="off"></label>
+        <div class="chips" id="prod-stock" aria-label="Filtrar por stock"></div>
         <div class="chips" id="prod-chips"></div>
       </div>
       <ul class="plist" id="prod-list"></ul>
@@ -243,6 +247,23 @@ textarea{font-family:var(--font-mono);font-size:14px}
         <input id="rday" type="date" aria-label="Día del cierre">
         <button class="icon-btn" data-act="day-next" type="button" aria-label="Día siguiente">›</button>
       </div>
+      <details class="export" id="export">
+        <summary>Exportar a Excel</summary>
+        <div class="export-body">
+          <p class="hint">Elegí el período y descargá un archivo con resumen, detalle de ventas, ventas por producto e inventario.</p>
+          <div class="chips">
+            <button class="chip" type="button" data-act="exp-preset" data-p="today" aria-pressed="false">Hoy</button>
+            <button class="chip" type="button" data-act="exp-preset" data-p="week" aria-pressed="false">Esta semana</button>
+            <button class="chip" type="button" data-act="exp-preset" data-p="month" aria-pressed="false">Este mes</button>
+            <button class="chip" type="button" data-act="exp-preset" data-p="prev" aria-pressed="false">Mes anterior</button>
+          </div>
+          <div class="two">
+            <label class="field">Desde<input id="exp-from" type="date"></label>
+            <label class="field">Hasta<input id="exp-to" type="date"></label>
+          </div>
+          <button class="btn btn-primary btn-block" type="button" data-act="exp-go">Descargar Excel (.xlsx)</button>
+        </div>
+      </details>
       <div id="report"></div>
     </section>
   </main>
@@ -307,7 +328,7 @@ var mode='loading', dbh=null, dl=true, syncErr=false;
 var tab='sell';
 try{tab=localStorage.getItem('cys.tab')||'sell'}catch(e){}
 if(['sell','prod','report'].indexOf(tab)<0)tab='sell';
-var qSell='',qProd='',catSell='',catProd='';
+var qSell='',qProd='',catSell='',catProd='',stockF='';
 var reportDay=dayKey(new Date());
 var cart={}, pay='efectivo';
 var voidId=null, editCat=null, catDelId=null, pendingBackup=null;
@@ -413,6 +434,11 @@ function renderProd(){
   var cl=cats();
   if(catProd&&!S.categories[catProd])catProd='';
   setHTML($('#prod-chips'),chipsHTML(cl,catProd,'chip-prod'));
+  var allP=prods(),inCat=allP.filter(function(p){return !catProd||p.cat===catProd});
+  var nOut=inCat.filter(function(p){return p.stock<=0}).length,nLow=inCat.filter(function(p){return p.stock>0&&p.stock<=LOW}).length;
+  setHTML($('#prod-stock'),allP.length?[['','Todos'],['out','Sin stock ('+nOut+')'],['low','Poco stock ('+nLow+')']].map(function(c){
+    return '<button class="chip" type="button" data-act="chip-stock" data-s="'+c[0]+'" aria-pressed="'+(stockF===c[0])+'">'+esc(c[1])+'</button>';
+  }).join(''):'');
   var list=$('#prod-list');
   if(!loaded.products){$('#prod-tools').hidden=true;$('#prod-summary').textContent='';setHTML(list,'<li class="empty">Cargando productos…</li>');return}
   var all=prods();
@@ -426,8 +452,14 @@ function renderProd(){
   all.forEach(function(p){units+=p.stock;vc+=p.stock*p.cost;vp+=p.stock*p.price});
   $('#prod-summary').textContent=all.length+(all.length===1?' producto · ':' productos · ')+units+' unidades · Stock a costo '+money(vc)+' · a precio de venta '+money(vp);
   var q=norm(qProd);
-  var f=all.filter(function(p){return (!catProd||p.cat===catProd)&&(!q||norm(p.title).indexOf(q)>-1)}).sort(byTitle);
-  if(!f.length){setHTML(list,'<li class="empty">No hay productos con ese filtro.</li>');return}
+  var f=all.filter(function(p){
+    if(catProd&&p.cat!==catProd)return false;
+    if(stockF==='out'&&p.stock>0)return false;
+    if(stockF==='low'&&!(p.stock>0&&p.stock<=LOW))return false;
+    return !q||norm(p.title).indexOf(q)>-1;
+  }).sort(byTitle);
+  if(catProd||q||stockF)$('#prod-summary').textContent+=' · Mostrando '+f.length;
+  if(!f.length){setHTML(list,'<li class="empty">'+(stockF==='out'?'No hay productos sin stock con este filtro.':stockF==='low'?'No hay productos con poco stock con este filtro.':'No hay productos con ese filtro.')+'</li>');return}
   setHTML(list,f.map(function(p){
     var st=stockTag(p.stock);
     return '<li><button class="prow" type="button" data-act="edit-product" data-id="'+esc(p.id)+'">'+
@@ -438,7 +470,7 @@ function renderProd(){
 }
 function row(label,val,cls){return '<div class="t-row'+(cls?' '+cls:'')+'"><span>'+label+'</span><i></i><b>'+val+'</b></div>'}
 function renderReport(){
-  var inp=$('#rday');inp.value=reportDay;inp.max=dayKey(new Date());
+  var inp=$('#rday');inp.value=reportDay;inp.max=dayKey(new Date());$('#exp-from').max=$('#exp-to').max=dayKey(new Date());
   var isToday=reportDay>=dayKey(new Date());
   document.querySelector('[data-act=day-next]').disabled=isToday;
   var el=$('#report');
@@ -673,6 +705,173 @@ function copySummary(){
   };
   try{navigator.clipboard.writeText(t).then(done,fallback)}catch(e){fallback()}
 }
+/*XLSX-START*/
+var CRCT=(function(){var t=[];for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc32(b){var c=0xFFFFFFFF;for(var i=0;i<b.length;i++)c=CRCT[(c^b[i])&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0}
+function zip(files){
+  var enc=new TextEncoder(),parts=[],central=[],off=0;
+  files.forEach(function(f){
+    var name=enc.encode(f.name),data=enc.encode(f.text),crc=crc32(data),sz=data.length;
+    var lh=new DataView(new ArrayBuffer(30));
+    lh.setUint32(0,0x04034b50,true);lh.setUint16(4,20,true);lh.setUint16(6,0x0800,true);lh.setUint16(8,0,true);lh.setUint16(10,0,true);lh.setUint16(12,33,true);
+    lh.setUint32(14,crc,true);lh.setUint32(18,sz,true);lh.setUint32(22,sz,true);lh.setUint16(26,name.length,true);lh.setUint16(28,0,true);
+    parts.push(new Uint8Array(lh.buffer),name,data);
+    var ch=new DataView(new ArrayBuffer(46));
+    ch.setUint32(0,0x02014b50,true);ch.setUint16(4,20,true);ch.setUint16(6,20,true);ch.setUint16(8,0x0800,true);ch.setUint16(10,0,true);ch.setUint16(12,0,true);ch.setUint16(14,33,true);
+    ch.setUint32(16,crc,true);ch.setUint32(20,sz,true);ch.setUint32(24,sz,true);ch.setUint16(28,name.length,true);ch.setUint32(42,off,true);
+    central.push(new Uint8Array(ch.buffer),name);
+    off+=30+name.length+sz;
+  });
+  var csize=0;central.forEach(function(p){csize+=p.length});
+  var end=new DataView(new ArrayBuffer(22));
+  end.setUint32(0,0x06054b50,true);end.setUint16(8,files.length,true);end.setUint16(10,files.length,true);end.setUint32(12,csize,true);end.setUint32(16,off,true);
+  return new Blob(parts.concat(central,[new Uint8Array(end.buffer)]),{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+function X(s){return String(s==null?'':s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function colL(i){var s='';i++;while(i>0){var m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=Math.floor((i-1)/26)}return s}
+function fmtD(k){var a=k.split('-');return a[2]+'/'+a[1]+'/'+a[0]}
+function serialDay(k){var a=k.split('-').map(Number);return Math.round((Date.UTC(a[0],a[1]-1,a[2])-Date.UTC(1899,11,30))/86400000)}
+function timeFrac(ts){var d=new Date(ts);return (d.getHours()*3600+d.getMinutes()*60+d.getSeconds())/86400}
+var ST={def:0,head:1,title:2,money:3,int:4,pct:5,date:6,time:7,moneyB:8,bold:9,intB:10,pctB:11,note:12};
+function cellXML(ref,cell){
+  var o=(cell!==null&&typeof cell==='object')?cell:{v:cell};
+  if(o.v==null&&o.f==null)return '';
+  var s=o.s?' s="'+o.s+'"':'';
+  if(o.f!=null)return '<c r="'+ref+'"'+s+'><f>'+X(o.f)+'</f><v>'+o.v+'</v></c>';
+  if(typeof o.v==='number'){if(!isFinite(o.v))return '';return '<c r="'+ref+'"'+s+'><v>'+o.v+'</v></c>'}
+  return '<c r="'+ref+'"'+s+' t="inlineStr"><is><t xml:space="preserve">'+X(o.v)+'</t></is></c>';
+}
+function sheetXML(rows,cfg){
+  var x='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"'+(cfg.first?' tabSelected="1"':'')+'>'+
+    (cfg.freeze?'<pane ySplit="'+cfg.freeze+'" topLeftCell="A'+(cfg.freeze+1)+'" activePane="bottomLeft" state="frozen"/>':'')+'</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>';
+  cfg.widths.forEach(function(w,i){x+='<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>'});
+  x+='</cols><sheetData>';
+  rows.forEach(function(r,ri){
+    var cs='';
+    r.forEach(function(c,ci){cs+=cellXML(colL(ci)+(ri+1),c)});
+    x+='<row r="'+(ri+1)+'">'+cs+'</row>';
+  });
+  x+='</sheetData>'+(cfg.filter?'<autoFilter ref="'+cfg.filter+'"/>':'')+'</worksheet>';
+  return x;
+}
+var STYLES_XML='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
+  '<numFmts count="4"><numFmt numFmtId="164" formatCode="&quot;$&quot; #,##0.00"/><numFmt numFmtId="165" formatCode="0.0%"/><numFmt numFmtId="166" formatCode="dd/mm/yyyy"/><numFmt numFmtId="167" formatCode="hh:mm"/></numFmts>'+
+  '<fonts count="5"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font><font><i/><sz val="10"/><color rgb="FF5A6A64"/><name val="Calibri"/></font></fonts>'+
+  '<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2B43D0"/><bgColor indexed="64"/></patternFill></fill></fills>'+
+  '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'+
+  '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'+
+  '<cellXfs count="13">'+
+  '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'+
+  '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>'+
+  '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>'+
+  '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'+
+  '<xf numFmtId="1" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'+
+  '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'+
+  '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'+
+  '<xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'+
+  '<xf numFmtId="164" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>'+
+  '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'+
+  '<xf numFmtId="1" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>'+
+  '<xf numFmtId="165" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>'+
+  '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>'+
+  '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+function buildWorkbook(from,to,sales){
+  var hd=function(a){return a.map(function(t){return {v:t,s:ST.head}})};
+  var prodCat=function(pid){var p=S.products[pid];return p?catName(p.cat):'(producto eliminado)'};
+  var tot=0,cost=0,units=0,pays={},days={},items={},detail=[];
+  sales.forEach(function(s){
+    tot+=s.total;cost+=s.costTotal;units+=s.units;
+    var pe=pays[s.pay]||(pays[s.pay]={n:0,t:0});pe.n++;pe.t+=s.total;
+    var d=days[s.day]||(days[s.day]={n:0,u:0,t:0,c:0});d.n++;d.u+=s.units;d.t+=s.total;d.c+=s.costTotal;
+    s.lines.forEach(function(l){
+      var sub=l.price*l.qty,gan=(l.price-l.cost)*l.qty,k=l.pid||l.title;
+      var it=items[k]||(items[k]={title:l.title,pid:l.pid,qty:0,t:0,c:0});it.qty+=l.qty;it.t+=sub;it.c+=l.cost*l.qty;
+      detail.push([{v:serialDay(s.day),s:ST.date},{v:timeFrac(s.ts),s:ST.time},l.title,prodCat(l.pid),{v:l.qty,s:ST.int},{v:l.price,s:ST.money},{v:l.cost,s:ST.money},{v:sub,s:ST.money},{v:gan,s:ST.money},payName(s.pay)]);
+    });
+  });
+  var net=tot-cost;
+  /* hoja 1: resumen */
+  var r1=[];
+  r1.push([{v:'Reporte de ventas',s:ST.title}]);
+  r1.push([{v:'Período',s:ST.bold},fmtD(from)+' al '+fmtD(to)]);
+  r1.push([{v:'Generado',s:ST.bold},new Date().toLocaleString('es-AR')]);
+  r1.push([{v:'La hoja Inventario muestra el stock al momento de exportar.',s:ST.note}]);
+  r1.push([]);
+  r1.push(hd(['Concepto','Valor']));
+  r1.push(['Cantidad de ventas',{v:sales.length,s:ST.int}]);
+  r1.push(['Unidades vendidas',{v:units,s:ST.int}]);
+  r1.push(['Total vendido',{v:tot,s:ST.money}]);
+  r1.push(['Costo de mercadería',{v:cost,s:ST.money}]);
+  r1.push([{v:'Ganancia',s:ST.bold},{v:net,s:ST.moneyB}]);
+  r1.push(['Margen',{v:tot>0?net/tot:null,s:ST.pct}]);
+  r1.push([]);
+  r1.push(hd(['Medio de pago','Ventas','Total']));
+  Object.keys(pays).sort().forEach(function(k){r1.push([payName(k),{v:pays[k].n,s:ST.int},{v:pays[k].t,s:ST.money}])});
+  r1.push([]);
+  r1.push(hd(['Día','Ventas','Unidades','Total vendido','Costo','Ganancia']));
+  Object.keys(days).sort().forEach(function(k){var d=days[k];r1.push([{v:serialDay(k),s:ST.date},{v:d.n,s:ST.int},{v:d.u,s:ST.int},{v:d.t,s:ST.money},{v:d.c,s:ST.money},{v:d.t-d.c,s:ST.money}])});
+  /* hoja 2: detalle */
+  var n2=detail.length,r2=[hd(['Fecha','Hora','Producto','Categoría','Cantidad','Precio unitario','Costo unitario','Subtotal','Ganancia','Medio de pago'])].concat(detail);
+  r2.push([]);
+  r2.push(['','',{v:'TOTAL',s:ST.bold},'',{f:'SUM(E2:E'+(n2+1)+')',v:units,s:ST.intB},'','',{f:'SUM(H2:H'+(n2+1)+')',v:tot,s:ST.moneyB},{f:'SUM(I2:I'+(n2+1)+')',v:net,s:ST.moneyB}]);
+  /* hoja 3: por producto */
+  var list=Object.keys(items).map(function(k){return items[k]}).sort(function(a,b){return b.t-a.t});
+  var n3=list.length,r3=[hd(['Producto','Categoría','Unidades vendidas','Total vendido','Costo','Ganancia','Margen'])];
+  list.forEach(function(it){r3.push([it.title,it.pid?prodCat(it.pid):'',{v:it.qty,s:ST.int},{v:it.t,s:ST.money},{v:it.c,s:ST.money},{v:it.t-it.c,s:ST.money},{v:it.t>0?(it.t-it.c)/it.t:null,s:ST.pct}])});
+  r3.push([]);
+  r3.push([{v:'TOTAL',s:ST.bold},'',{f:'SUM(C2:C'+(n3+1)+')',v:units,s:ST.intB},{f:'SUM(D2:D'+(n3+1)+')',v:tot,s:ST.moneyB},{f:'SUM(E2:E'+(n3+1)+')',v:cost,s:ST.moneyB},{f:'SUM(F2:F'+(n3+1)+')',v:net,s:ST.moneyB},{v:tot>0?net/tot:null,s:ST.pctB}]);
+  /* hoja 4: inventario */
+  var pl=prods().sort(byTitle),n4=pl.length,vc=0,vp=0,su=0;
+  var r4=[hd(['Producto','Categoría','Costo','Precio de venta','Margen','Stock','Valor a costo','Valor a precio','Estado'])];
+  pl.forEach(function(p){
+    vc+=p.stock*p.cost;vp+=p.stock*p.price;su+=p.stock;
+    r4.push([p.title,catName(p.cat),{v:p.cost,s:ST.money},{v:p.price,s:ST.money},{v:p.price>0?(p.price-p.cost)/p.price:null,s:ST.pct},{v:p.stock,s:ST.int},{v:p.stock*p.cost,s:ST.money},{v:p.stock*p.price,s:ST.money},p.stock<=0?'Sin stock':(p.stock<=LOW?'Poco stock':'OK')]);
+  });
+  r4.push([]);
+  r4.push([{v:'TOTAL',s:ST.bold},'','','','',{f:'SUM(F2:F'+(n4+1)+')',v:su,s:ST.intB},{f:'SUM(G2:G'+(n4+1)+')',v:vc,s:ST.moneyB},{f:'SUM(H2:H'+(n4+1)+')',v:vp,s:ST.moneyB}]);
+  var NS='xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+  var names=['Resumen','Detalle de ventas','Ventas por producto','Inventario'];
+  var sheets=[
+    sheetXML(r1,{first:true,widths:[30,24,14,18,18,18]}),
+    sheetXML(r2,{freeze:1,filter:'A1:J'+(n2+1),widths:[12,8,34,18,10,16,16,16,16,16]}),
+    sheetXML(r3,{freeze:1,filter:'A1:G'+(n3+1),widths:[34,18,12,16,16,16,12]}),
+    sheetXML(r4,{freeze:1,filter:'A1:I'+(n4+1),widths:[34,18,14,16,12,10,16,16,14]})
+  ];
+  var files=[
+    {name:'[Content_Types].xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+
+      names.map(function(n,i){return '<Override PartName="/xl/worksheets/sheet'+(i+1)+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'}).join('')+
+      '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>'},
+    {name:'_rels/.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>'},
+    {name:'xl/workbook.xml',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<workbook '+NS+' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>'+
+      names.map(function(n,i){return '<sheet name="'+X(n)+'" sheetId="'+(i+1)+'" r:id="rId'+(i+1)+'"/>'}).join('')+'</sheets><calcPr fullCalcOnLoad="1"/></workbook>'},
+    {name:'xl/_rels/workbook.xml.rels',text:'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+      names.map(function(n,i){return '<Relationship Id="rId'+(i+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+(i+1)+'.xml"/>'}).join('')+
+      '<Relationship Id="rId5" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>'},
+    {name:'xl/styles.xml',text:STYLES_XML}
+  ];
+  sheets.forEach(function(x,i){files.push({name:'xl/worksheets/sheet'+(i+1)+'.xml',text:x})});
+  return zip(files);
+}
+function salesInRange(from,to){
+  return Object.keys(S.sales).map(function(id){return Object.assign({},S.sales[id],{id:id})}).filter(function(s){return s.day>=from&&s.day<=to}).sort(function(a,b){return a.ts-b.ts});
+}
+function setPreset(p){
+  var d=new Date(),t=dayKey(d),from=t,to=t;
+  if(p==='week')from=addDays(t,-((d.getDay()+6)%7));
+  else if(p==='month')from=t.slice(0,8)+'01';
+  else if(p==='prev'){from=dayKey(new Date(d.getFullYear(),d.getMonth()-1,1));to=dayKey(new Date(d.getFullYear(),d.getMonth(),0))}
+  $('#exp-from').value=from;$('#exp-to').value=to;
+}
+function exportExcel(){
+  var from=$('#exp-from').value,to=$('#exp-to').value;
+  if(!from||!to){toast('Elegí las dos fechas.');return}
+  if(from>to){var t=from;from=to;to=t}
+  var sales=salesInRange(from,to);
+  if(!sales.length){toast('No hay ventas en ese período.');return}
+  try{saveFile('reporte-ventas_'+from+'_a_'+to+'.xlsx',buildWorkbook(from,to,sales),'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
+  catch(e){try{console.error(e)}catch(x){}toast('No se pudo armar el archivo de Excel.')}
+}
+/*XLSX-END*/
 function saveFile(name,text,type){
   try{
     var b=new Blob([text],{type:type}),u=URL.createObjectURL(b),a=document.createElement('a');
@@ -731,6 +930,7 @@ document.addEventListener('click',function(e){
     case 'close-sheet':closeSheet();break;
     case 'chip-sell':catSell=b.getAttribute('data-cat');schedule();break;
     case 'chip-prod':catProd=b.getAttribute('data-cat');schedule();break;
+    case 'chip-stock':stockF=b.getAttribute('data-s');schedule();break;
     case 'add':addToCart(id);break;
     case 'open-cart':openCart();break;
     case 'cart-inc':addToCart(id);refreshCart();break;
@@ -751,6 +951,8 @@ document.addEventListener('click',function(e){
       var pid=pf.id;delete cart[pid];
       del('products',pid).then(function(ok){if(ok){closeSheet();toast('Producto eliminado')}});break;
     }
+    case 'exp-preset':setPreset(b.getAttribute('data-p'));break;
+    case 'exp-go':exportExcel();break;
     case 'open-backup':openSheet('backup','Copia de seguridad',backupHTML());break;
     case 'backup-export':exportBackup();break;
     case 'backup-no':pendingBackup=null;setSheetBody(backupHTML());break;
@@ -824,6 +1026,7 @@ document.addEventListener('submit',function(e){
 
 /* ---------- boot ---------- */
 render();
+setPreset('month');
 (function boot(){
   if(!window.indexedDB){syncErr=true;render();toast('Este navegador no permite guardar datos.');return}
   idbOpen().then(function(db){idb=db;return idbLoadAll()}).then(function(){

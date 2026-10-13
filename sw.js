@@ -1,6 +1,6 @@
 /* Service worker de Caja y Stock: deja la app disponible sin internet.
    Para publicar una versión nueva, cambiá el número de VERSION. */
-const VERSION = 'caja-v1';
+const VERSION = 'caja-v3';
 const FONTS = VERSION + '-fonts';
 const SHELL = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
